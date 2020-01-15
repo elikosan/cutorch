@@ -14,14 +14,20 @@
 
 // Threads per block for our apply kernel
 // FIXME: use occupancy calculator instead
-#define THC_APPLY_THREADS_PER_BLOCK 32 * 16
+#if __CUDA_ARCH__ >= 750
+#define THC_APPLY_THREADS_PER_BLOCK (32 * 16)
+#define THC_APPLY_BLOCKS_PER_SM 2
+#else
+#define THC_APPLY_THREADS_PER_BLOCK (32 * 16)
+#define THC_APPLY_BLOCKS_PER_SM 4
+#endif
 
 template <typename Op,
           typename Ta,
           typename IndexType,
           int ADims>
 #if __CUDA_ARCH__ >= 350
-__launch_bounds__(32 * 16, 4)
+__launch_bounds__(THC_APPLY_THREADS_PER_BLOCK, THC_APPLY_BLOCKS_PER_SM)
 #endif
 __global__ void
 kernelPointwiseApply1(TensorInfo<Ta, IndexType> a,
@@ -43,7 +49,7 @@ template <typename Op,
           typename IndexType,
           int ADims, int BDims>
 #if __CUDA_ARCH__ >= 350
-__launch_bounds__(32 * 16, 4)
+__launch_bounds__(THC_APPLY_THREADS_PER_BLOCK, THC_APPLY_BLOCKS_PER_SM)
 #endif
 __global__ void
 kernelPointwiseApply2(TensorInfo<Ta, IndexType> a,
@@ -70,7 +76,7 @@ template <typename Op,
           typename IndexType,
           int ADims, int BDims, int CDims>
 #if __CUDA_ARCH__ >= 350
-__launch_bounds__(32 * 16, 4)
+__launch_bounds__(THC_APPLY_THREADS_PER_BLOCK, THC_APPLY_BLOCKS_PER_SM)
 #endif
 __global__ void
 kernelPointwiseApply3(TensorInfo<Ta, IndexType> a,
@@ -109,16 +115,16 @@ inline bool getApplyGrid(THCState* state, ptrdiff_t totalElements, dim3& grid) {
     return false;
   }
 
-  // Assume a reasonable number of SMs if no state is available
-  int numSM =
-    state ? THCState_getCurrentDeviceProperties(state)->multiProcessorCount : 15;
+  if(THCState_getCurrentDeviceProperties(state)->major < 3){
+    grid = dim3(min((long long) THCCeilDiv(totalElements,
+               (ptrdiff_t) THC_APPLY_THREADS_PER_BLOCK), (long long) 64*1024-1));
+    return true;
+  }
 
-  // 16 warps per block * 4 per SM gives 64 warps per SM at maximum,
-  // which seems to be a good sweetspot for latency hiding
-  grid = dim3(min((long long) THCCeilDiv(totalElements,
-                                         (ptrdiff_t) THC_APPLY_THREADS_PER_BLOCK),
-                  4LL * numSM));
+  grid = dim3((long long) THCCeilDiv(totalElements,
+              (ptrdiff_t) THC_APPLY_THREADS_PER_BLOCK) );
   return true;
+
 }
 
 template <typename TensorTypeA,
@@ -640,5 +646,6 @@ bool THC_pointwiseApply3(THCState* state,
 }
 
 #undef THC_APPLY_THREADS_PER_BLOCK
+#undef THC_APPLY_BLOCKS_PER_SM
 
 #endif // THC_APPLY_INC
